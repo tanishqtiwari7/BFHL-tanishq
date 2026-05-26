@@ -15,9 +15,10 @@ export const getDerivedFields = (ticket) => {
   const createdAt = new Date(ticket.createdAt);
   const resolvedAt = ticket.resolvedAt ? new Date(ticket.resolvedAt) : null;
   const endTime = resolvedAt ?? new Date();
-  const ageMinutes = Math.max(0, Math.round((endTime - createdAt) / 60000));
+  const diffMs = Math.max(0, endTime - createdAt);
+  const ageMinutes = Math.floor(diffMs / 60000);
   const target = getPriorityTargetMinutes(ticket.priority);
-  const slaBreached = target ? ageMinutes > target : false;
+  const slaBreached = target ? diffMs > target * 60000 : false;
 
   return { ageMinutes, slaBreached };
 };

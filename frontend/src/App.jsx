@@ -130,8 +130,7 @@ function App() {
         priority: formValues.priority,
       };
 
-      const { data } = await axios.post(`${API_BASE}/tickets`, payload);
-      setTickets((prev) => [data, ...prev]);
+      await axios.post(`${API_BASE}/tickets`, payload);
       setFormValues({
         subject: "",
         description: "",
@@ -139,7 +138,8 @@ function App() {
         priority: "medium",
       });
       setFormErrors({});
-      fetchStats();
+      await fetchTickets();
+      await fetchStats();
     } catch (requestError) {
       setError("Unable to create ticket. Please check the form fields.");
     }
@@ -147,13 +147,11 @@ function App() {
 
   const handleMove = async (ticketId, nextStatus) => {
     try {
-      const { data } = await axios.patch(`${API_BASE}/tickets/${ticketId}`, {
+      await axios.patch(`${API_BASE}/tickets/${ticketId}`, {
         status: nextStatus,
       });
-      setTickets((prev) =>
-        prev.map((ticket) => (ticket._id === ticketId ? data : ticket)),
-      );
-      fetchStats();
+      await fetchTickets();
+      await fetchStats();
     } catch (requestError) {
       setError("Unable to update ticket status.");
     }
@@ -183,6 +181,21 @@ function App() {
           </div>
         </div>
       </header>
+
+      <section className="stats-strip">
+        {statuses.map((status) => (
+          <div key={status} className="stat-card">
+            <p className="stat-label">{statusLabels[status]}</p>
+            <p className="stat-value">
+              {stats?.statusCounts ? stats.statusCounts[status] : "--"}
+            </p>
+          </div>
+        ))}
+        <div className="stat-card accent">
+          <p className="stat-label">Breached Open</p>
+          <p className="stat-value">{stats ? stats.breachedOpen : "--"}</p>
+        </div>
+      </section>
 
       <section className="filters">
         <div className="filter-group">
