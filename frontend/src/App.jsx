@@ -1,163 +1,368 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
-const API_URL = import.meta.env.VITE_API_BASE_URL;
-const ROLL_NUMBER = import.meta.env.VITE_ROLL_NUMBER || "ABCD123";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
-const filterOptions = [
-  { value: "alphabets", label: "Alphabets" },
-  { value: "numbers", label: "Numbers" },
-  { value: "highest_lowercase_alphabet", label: "Highest lowercase alphabet" },
-];
+const statuses = ["open", "in_progress", "resolved", "closed"];
+const statusLabels = {
+  open: "Open",
+  in_progress: "In Progress",
+  resolved: "Resolved",
+  closed: "Closed",
+};
 
-const defaultPayload = '{ "data": ["A", "C", "z"] }';
+const priorityOptions = ["low", "medium", "high", "urgent"];
+
+const formatAge = (minutes) => {
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m`;
+  }
+  return `${mins}m`;
+};
+
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function App() {
-  const [rawInput, setRawInput] = useState(defaultPayload);
+  const [tickets, setTickets] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [response, setResponse] = useState(null);
-  const [selectedFilters, setSelectedFilters] = useState(
-    filterOptions.map((option) => option.value),
-  );
+  const [filters, setFilters] = useState({ priority: "", breached: false });
+
+  const [formValues, setFormValues] = useState({
+    subject: "",
+    description: "",
+    customerEmail: "",
+    priority: "medium",
+  });
+  const [formErrors, setFormErrors] = useState({});
+
+  const fetchTickets = useCallback(async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const params = {};
+      if (filters.priority) {
+        params.priority = filters.priority;
+      }
+      if (filters.breached) {
+        params.breached = "true";
+      }
+
+      const { data } = await axios.get(`${API_BASE}/tickets`, { params });
+      setTickets(data);
+    } catch (requestError) {
+      setError("Unable to load tickets. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API_BASE}/tickets/stats`);
+      setStats(data);
+    } catch (requestError) {
+      setStats(null);
+    }
+  }, []);
 
   useEffect(() => {
-    document.title = ROLL_NUMBER;
-  }, []);
+    fetchTickets();
+    fetchStats();
+  }, [fetchTickets, fetchStats]);
 
-  const selectedLabelMap = useMemo(() => {
-    return filterOptions.reduce((acc, option) => {
-      acc[option.value] = option.label;
+  const groupedTickets = useMemo(() => {
+    return statuses.reduce((acc, status) => {
+      acc[status] = tickets.filter((ticket) => ticket.status === status);
       return acc;
     }, {});
-  }, []);
+  }, [tickets]);
+
+  const handleFilterChange = (event) => {
+    const { name, value, checked, type } = event.target;
+    setFilters((prev) => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value,
+    }));
+  };
+
+  const handleFormChange = (event) => {
+    const { name, value } = event.target;
+    setFormValues((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const validateForm = () => {
+    const nextErrors = {};
+    if (!formValues.subject.trim()) {
+      nextErrors.subject = "Subject is required.";
+    }
+    if (!formValues.description.trim()) {
+      nextErrors.description = "Description is required.";
+    }
+    if (!formValues.customerEmail.trim()) {
+      nextErrors.customerEmail = "Email is required.";
+    } else if (!emailRegex.test(formValues.customerEmail)) {
+      nextErrors.customerEmail = "Enter a valid email.";
+    }
+    if (!priorityOptions.includes(formValues.priority)) {
+      nextErrors.priority = "Select a valid priority.";
+    }
+
+    setFormErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    setError("");
-    setResponse(null);
-
-    let payload;
-    try {
-      payload = JSON.parse(rawInput);
-    } catch (parseError) {
-      setError("Invalid JSON. Please check the format and try again.");
-      return;
-    }
-
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      !Array.isArray(payload.data)
-    ) {
-      setError("JSON must be an object with a data array.");
+    if (!validateForm()) {
       return;
     }
 
     try {
-      const { data } = await axios.post(API_URL, payload, {
-        headers: { "Content-Type": "application/json" },
+      const payload = {
+        subject: formValues.subject.trim(),
+        description: formValues.description.trim(),
+        customerEmail: formValues.customerEmail.trim(),
+        priority: formValues.priority,
+      };
+
+      const { data } = await axios.post(`${API_BASE}/tickets`, payload);
+      setTickets((prev) => [data, ...prev]);
+      setFormValues({
+        subject: "",
+        description: "",
+        customerEmail: "",
+        priority: "medium",
       });
-      setResponse(data);
+      setFormErrors({});
+      fetchStats();
     } catch (requestError) {
-      setError("Request failed. Check the API URL and try again.");
+      setError("Unable to create ticket. Please check the form fields.");
     }
   };
 
-  const handleFilterChange = (event) => {
-    const values = Array.from(event.target.selectedOptions).map(
-      (option) => option.value,
-    );
-    setSelectedFilters(values);
-  };
-
-  const filteredBlocks = useMemo(() => {
-    if (!response) {
-      return [];
+  const handleMove = async (ticketId, nextStatus) => {
+    try {
+      const { data } = await axios.patch(`${API_BASE}/tickets/${ticketId}`, {
+        status: nextStatus,
+      });
+      setTickets((prev) =>
+        prev.map((ticket) => (ticket._id === ticketId ? data : ticket)),
+      );
+      fetchStats();
+    } catch (requestError) {
+      setError("Unable to update ticket status.");
     }
-
-    return selectedFilters.map((filter) => ({
-      key: filter,
-      label: selectedLabelMap[filter],
-      value: response[filter] ?? [],
-    }));
-  }, [response, selectedFilters, selectedLabelMap]);
+  };
 
   return (
     <div className="page">
-      <div className="container">
-        <header className="header">
-          <div className="header-copy">
-            <p className="eyebrow">BFHL Data Processor</p>
-            <h1 className="title">Simple input. Clear response.</h1>
-            <p className="subtitle">
-              Paste your payload, submit to the BFHL API, then focus on the
-              output you need.
+      <header className="hero">
+        <div className="hero-copy">
+          <p className="eyebrow">DeskFlow</p>
+          <h1>Support ticket triage, flowing at speed.</h1>
+          <p>
+            Track priority, SLA, and status transitions with a focused board for
+            your support team.
+          </p>
+        </div>
+        <div className="hero-panel">
+          <div>
+            <p className="panel-label">Live Stats</p>
+            <p className="panel-value">
+              {stats ? stats.totalTickets : "--"} Tickets
             </p>
           </div>
-          <div className="roll-card">
-            <p className="roll-label">Roll Number</p>
-            <p className="roll-value">{ROLL_NUMBER}</p>
+          <div>
+            <p className="panel-label">Breached (Open)</p>
+            <p className="panel-value">{stats ? stats.breachedOpen : "--"}</p>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <main className="grid">
-          <section className="card">
-            <div className="card-header">
-              <h2>Request Payload</h2>
-              <p>Provide a JSON object with a data array.</p>
-            </div>
-            <form className="form" onSubmit={handleSubmit}>
-              <textarea
-                className="payload"
-                value={rawInput}
-                onChange={(event) => setRawInput(event.target.value)}
-                spellCheck={false}
-              />
-              {error ? <div className="error">{error}</div> : null}
-              <button type="submit" className="primary-button">
-                Submit JSON
-              </button>
-            </form>
-          </section>
+      <section className="filters">
+        <div className="filter-group">
+          <label htmlFor="priority">Priority</label>
+          <select
+            id="priority"
+            name="priority"
+            value={filters.priority}
+            onChange={handleFilterChange}
+          >
+            <option value="">All</option>
+            {priorityOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </div>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            name="breached"
+            checked={filters.breached}
+            onChange={handleFilterChange}
+          />
+          <span>Only SLA breached</span>
+        </label>
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={() => {
+            setFilters({ priority: "", breached: false });
+          }}
+        >
+          Reset Filters
+        </button>
+      </section>
 
-          <section className="card">
-            <div className="card-header">
-              <h2>Response Filters</h2>
-              <p>Select the sections you want to review.</p>
+      {error ? <div className="error-banner">{error}</div> : null}
+
+      <section className="board">
+        {statuses.map((status) => (
+          <div key={status} className="column">
+            <div className="column-header">
+              <h2>{statusLabels[status]}</h2>
+              <span>{groupedTickets[status]?.length ?? 0}</span>
             </div>
+            <div className="column-body">
+              {loading ? (
+                <div className="loading">Loading tickets...</div>
+              ) : groupedTickets[status]?.length ? (
+                groupedTickets[status].map((ticket) => {
+                  const currentIndex = statuses.indexOf(ticket.status);
+                  const prevStatus =
+                    currentIndex > 0 ? statuses[currentIndex - 1] : null;
+                  const nextStatus =
+                    currentIndex < statuses.length - 1
+                      ? statuses[currentIndex + 1]
+                      : null;
+
+                  return (
+                    <article
+                      key={ticket._id}
+                      className={`ticket priority-${ticket.priority}`}
+                    >
+                      <header>
+                        <h3>{ticket.subject}</h3>
+                        <span className="badge">{ticket.priority}</span>
+                      </header>
+                      <p className="ticket-desc">{ticket.description}</p>
+                      <div className="ticket-meta">
+                        <span>{formatAge(ticket.ageMinutes)}</span>
+                        {ticket.slaBreached ? (
+                          <span className="breach">SLA Breached</span>
+                        ) : (
+                          <span className="ok">On Track</span>
+                        )}
+                      </div>
+                      <div className="actions">
+                        {prevStatus ? (
+                          <button
+                            type="button"
+                            onClick={() => handleMove(ticket._id, prevStatus)}
+                          >
+                            {statusLabels[prevStatus]}
+                          </button>
+                        ) : null}
+                        {nextStatus ? (
+                          <button
+                            type="button"
+                            onClick={() => handleMove(ticket._id, nextStatus)}
+                          >
+                            {statusLabels[nextStatus]}
+                          </button>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })
+              ) : (
+                <div className="empty">No tickets</div>
+              )}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="form-section">
+        <div>
+          <h2>Create Ticket</h2>
+          <p>
+            Log a new request with priority and customer details. New tickets
+            land in the Open column instantly.
+          </p>
+        </div>
+        <form className="ticket-form" onSubmit={handleSubmit}>
+          <div className="field">
+            <label htmlFor="subject">Subject</label>
+            <input
+              id="subject"
+              name="subject"
+              value={formValues.subject}
+              onChange={handleFormChange}
+              placeholder="Cannot log in"
+            />
+            {formErrors.subject ? (
+              <span className="field-error">{formErrors.subject}</span>
+            ) : null}
+          </div>
+          <div className="field">
+            <label htmlFor="customerEmail">Customer Email</label>
+            <input
+              id="customerEmail"
+              name="customerEmail"
+              value={formValues.customerEmail}
+              onChange={handleFormChange}
+              placeholder="customer@deskflow.io"
+              type="email"
+            />
+            {formErrors.customerEmail ? (
+              <span className="field-error">{formErrors.customerEmail}</span>
+            ) : null}
+          </div>
+          <div className="field full">
+            <label htmlFor="description">Description</label>
+            <textarea
+              id="description"
+              name="description"
+              value={formValues.description}
+              onChange={handleFormChange}
+              placeholder="Describe the issue..."
+              rows={4}
+            />
+            {formErrors.description ? (
+              <span className="field-error">{formErrors.description}</span>
+            ) : null}
+          </div>
+          <div className="field">
+            <label htmlFor="priority">Priority</label>
             <select
-              multiple
-              className="filters"
-              value={selectedFilters}
-              onChange={handleFilterChange}
-              disabled={!response}
+              id="priority"
+              name="priority"
+              value={formValues.priority}
+              onChange={handleFormChange}
             >
-              {filterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+              {priorityOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
                 </option>
               ))}
             </select>
-
-            <div className="results">
-              {!response ? (
-                <div className="empty-state">
-                  Submit valid JSON to view the response sections.
-                </div>
-              ) : (
-                filteredBlocks.map((block) => (
-                  <div key={block.key} className="result-block">
-                    <p className="result-title">{block.label}</p>
-                    <pre className="result-body">
-                      {JSON.stringify(block.value, null, 2)}
-                    </pre>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </main>
-      </div>
+            {formErrors.priority ? (
+              <span className="field-error">{formErrors.priority}</span>
+            ) : null}
+          </div>
+          <button type="submit" className="primary-button">
+            Create Ticket
+          </button>
+        </form>
+      </section>
     </div>
   );
 }
