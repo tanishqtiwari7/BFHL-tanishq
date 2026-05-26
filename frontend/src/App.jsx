@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
 import axios from "axios";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
@@ -23,6 +31,77 @@ const formatAge = (minutes) => {
 };
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const DraggableTicket = ({
+  ticket,
+  prevStatus,
+  nextStatus,
+  onMove,
+  formatAge,
+}) => {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({ id: ticket._id });
+
+  const style = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+      }
+    : undefined;
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      className={`ticket priority-${ticket.priority} ${
+        isDragging ? "is-dragging" : ""
+      }`}
+    >
+      <header>
+        <h3>{ticket.subject}</h3>
+        <span className="badge">{ticket.priority}</span>
+      </header>
+      <p className="ticket-desc">{ticket.description}</p>
+      <div className="ticket-meta">
+        <span>{formatAge(ticket.ageMinutes)}</span>
+        {ticket.slaBreached ? (
+          <span className="breach">SLA Breached</span>
+        ) : (
+          <span className="ok">On Track</span>
+        )}
+      </div>
+      <div className="actions">
+        {prevStatus ? (
+          <button type="button" onClick={() => onMove(ticket._id, prevStatus)}>
+            {statusLabels[prevStatus]}
+          </button>
+        ) : null}
+        {nextStatus ? (
+          <button type="button" onClick={() => onMove(ticket._id, nextStatus)}>
+            {statusLabels[nextStatus]}
+          </button>
+        ) : null}
+      </div>
+      <div
+        className="drag-handle"
+        aria-label="Drag ticket"
+        {...attributes}
+        {...listeners}
+      >
+        ::
+      </div>
+    </article>
+  );
+};
+
+const DroppableColumn = ({ status, children }) => {
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+
+  return (
+    <div ref={setNodeRef} className={`column ${isOver ? "is-over" : ""}`}>
+      {children}
+    </div>
+  );
+};
 
 function App() {
   const [tickets, setTickets] = useState([]);
@@ -150,11 +229,47 @@ function App() {
       await axios.patch(`${API_BASE}/tickets/${ticketId}`, {
         status: nextStatus,
       });
+      setError("");
       await fetchTickets();
       await fetchStats();
     } catch (requestError) {
       setError("Unable to update ticket status.");
     }
+  };
+
+  const sensors = useSensors(useSensor(PointerSensor));
+
+  const handleDragEnd = async (event) => {
+    const { active, over } = event;
+    if (!over) {
+      return;
+    }
+
+    const ticketId = active.id;
+    const targetStatus = over.id;
+    const ticket = tickets.find((item) => item._id === ticketId);
+
+    if (!ticket || !statuses.includes(targetStatus)) {
+      return;
+    }
+
+    if (ticket.status === targetStatus) {
+      return;
+    }
+
+    const currentIndex = statuses.indexOf(ticket.status);
+    const targetIndex = statuses.indexOf(targetStatus);
+
+    if (currentIndex === -1 || targetIndex === -1) {
+      return;
+    }
+
+    if (Math.abs(targetIndex - currentIndex) !== 1) {
+      setError("Invalid status transition.");
+      return;
+    }
+
+    await handleMove(ticketId, targetStatus);
   };
 
   return (
@@ -236,72 +351,46 @@ function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="board">
-        {statuses.map((status) => (
-          <div key={status} className="column">
-            <div className="column-header">
-              <h2>{statusLabels[status]}</h2>
-              <span>{groupedTickets[status]?.length ?? 0}</span>
-            </div>
-            <div className="column-body">
-              {loading ? (
-                <div className="loading">Loading tickets...</div>
-              ) : groupedTickets[status]?.length ? (
-                groupedTickets[status].map((ticket) => {
-                  const currentIndex = statuses.indexOf(ticket.status);
-                  const prevStatus =
-                    currentIndex > 0 ? statuses[currentIndex - 1] : null;
-                  const nextStatus =
-                    currentIndex < statuses.length - 1
-                      ? statuses[currentIndex + 1]
-                      : null;
+      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+        <section className="board">
+          {statuses.map((status) => (
+            <DroppableColumn key={status} status={status}>
+              <div className="column-header">
+                <h2>{statusLabels[status]}</h2>
+                <span>{groupedTickets[status]?.length ?? 0}</span>
+              </div>
+              <div className="column-body">
+                {loading ? (
+                  <div className="loading">Loading tickets...</div>
+                ) : groupedTickets[status]?.length ? (
+                  groupedTickets[status].map((ticket) => {
+                    const currentIndex = statuses.indexOf(ticket.status);
+                    const prevStatus =
+                      currentIndex > 0 ? statuses[currentIndex - 1] : null;
+                    const nextStatus =
+                      currentIndex < statuses.length - 1
+                        ? statuses[currentIndex + 1]
+                        : null;
 
-                  return (
-                    <article
-                      key={ticket._id}
-                      className={`ticket priority-${ticket.priority}`}
-                    >
-                      <header>
-                        <h3>{ticket.subject}</h3>
-                        <span className="badge">{ticket.priority}</span>
-                      </header>
-                      <p className="ticket-desc">{ticket.description}</p>
-                      <div className="ticket-meta">
-                        <span>{formatAge(ticket.ageMinutes)}</span>
-                        {ticket.slaBreached ? (
-                          <span className="breach">SLA Breached</span>
-                        ) : (
-                          <span className="ok">On Track</span>
-                        )}
-                      </div>
-                      <div className="actions">
-                        {prevStatus ? (
-                          <button
-                            type="button"
-                            onClick={() => handleMove(ticket._id, prevStatus)}
-                          >
-                            {statusLabels[prevStatus]}
-                          </button>
-                        ) : null}
-                        {nextStatus ? (
-                          <button
-                            type="button"
-                            onClick={() => handleMove(ticket._id, nextStatus)}
-                          >
-                            {statusLabels[nextStatus]}
-                          </button>
-                        ) : null}
-                      </div>
-                    </article>
-                  );
-                })
-              ) : (
-                <div className="empty">No tickets</div>
-              )}
-            </div>
-          </div>
-        ))}
-      </section>
+                    return (
+                      <DraggableTicket
+                        key={ticket._id}
+                        ticket={ticket}
+                        prevStatus={prevStatus}
+                        nextStatus={nextStatus}
+                        onMove={handleMove}
+                        formatAge={formatAge}
+                      />
+                    );
+                  })
+                ) : (
+                  <div className="empty">No tickets</div>
+                )}
+              </div>
+            </DroppableColumn>
+          ))}
+        </section>
+      </DndContext>
 
       <section className="form-section">
         <div>
