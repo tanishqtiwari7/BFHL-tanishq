@@ -7,12 +7,9 @@ dotenv.config();
 
 const app = express();
 
-const corsOrigin = process.env.CLIENT_ORIGIN || "*";
-app.use(
-  cors({
-    origin: corsOrigin === "*" ? "*" : corsOrigin.split(","),
-  }),
-);
+
+app.use(cors());
+
 app.use(express.json({ limit: "2mb" }));
 
 app.use("/tickets", ticketRoutes);
